@@ -590,14 +590,17 @@ impl OrdEq for b256 {
 }
 
 // @todo move up with other impl adds when possible
-// 0001
-// 0010
+// carry 0001
+// a     0001
+// b     0010
+// sum   0000
 impl Add for b256 {
     fn add(self, other: Self) -> Self {
         let mut sum: b256 = 0x0000000000000000_0000000000000000_0000000000000000_0000000000000000;
         let mut a = self;
         let mut b = other;
         let mut carry = 0x0000000000000000_0000000000000000_0000000000000000_0000000000000000;
+
 
         while not(b.eq(0x0000000000000000_0000000000000000_0000000000000000_0000000000000000)) {
             carry = a.binary_and(b);
