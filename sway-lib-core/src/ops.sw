@@ -596,13 +596,11 @@ impl Add for b256 {
         let mut b = other;
         let mut carry = 0x0000000000000000_0000000000000000_0000000000000000_0000000000000000;
 
-
         while not(b.eq(0x0000000000000000_0000000000000000_0000000000000000_0000000000000000)) {
             carry = a.binary_and(b);
             a = a.binary_xor(b);
             b = carry.lsh(1);
         }
-
         a
     }
 }
