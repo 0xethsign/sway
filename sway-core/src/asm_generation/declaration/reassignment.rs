@@ -6,7 +6,9 @@ use crate::{
     },
     asm_lang::{VirtualImmediate12, VirtualOp},
     constants::VM_WORD_SIZE,
-    semantic_analysis::ast_node::{ReassignmentLhs, TypedReassignment, TypedStructField},
+    semantic_analysis::ast_node::{
+        ReassignmentLhs, ReassignmentLhsKind, TypedReassignment, TypedStructField,
+    },
     type_engine::*,
     type_engine::{resolve_type, TypeInfo},
 };
@@ -65,12 +67,17 @@ pub(crate) fn convert_reassignment_to_asm(
         // 2. write rhs to the address above
         //
         // step 0
+        enum FieldsKind {
+            Struct(Vec<TypedStructField>),
+        }
         let mut offset_in_words = 0;
         let (mut fields, top_level_decl) = {
             let r#type = &reassignment.lhs_type;
             let name = &reassignment.lhs_base_name;
             let res = match resolve_type(*r#type, name.span()) {
-                Ok(TypeInfo::Struct { ref fields, .. }) => Ok((fields.clone(), name)),
+                Ok(TypeInfo::Struct { ref fields, .. }) => {
+                    Ok((FieldsKind::Struct(fields.clone()), name))
+                }
                 Ok(ref a) => Err(CompileError::NotAStruct {
                     name: name.as_str().to_string(),
                     span: name.span().clone(),
@@ -89,8 +96,8 @@ pub(crate) fn convert_reassignment_to_asm(
 
         // delve into this potentially nested field access and figure out the location of this
         // subfield
-        for ReassignmentLhs { r#type, name } in reassignment.lhs_indices.iter() {
-            let r#type = match resolve_type(*r#type, name.span()) {
+        for ReassignmentLhs { r#type, kind } in reassignment.lhs_indices.iter() {
+            let r#type = match resolve_type(*r#type, &kind.span()) {
                 Ok(o) => o,
                 Err(e) => {
                     errors.push(CompileError::TypeError(e));
@@ -105,33 +112,46 @@ pub(crate) fn convert_reassignment_to_asm(
                 None,
             )
             .unwrap();
-            let fields_for_layout = fields
-                .iter()
-                .map(|TypedStructField { name, r#type, .. }| (*r#type, span.clone(), name.clone()))
-                .collect::<Vec<_>>();
-            let field_layout = check!(
-                get_contiguous_memory_layout(&fields_for_layout[..]),
-                return err(warnings, errors),
-                warnings,
-                errors
-            );
-            let offset_of_this_field = check!(
-                field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
-                return err(warnings, errors),
-                warnings,
-                errors
-            );
-            offset_in_words += offset_of_this_field;
-            fields = match r#type {
-                TypeInfo::Struct { ref fields, .. } => fields.clone(),
-                a => {
-                    errors.push(CompileError::NotAStruct {
-                        name: name.as_str().to_string(),
-                        span: name.span().clone(),
-                        actually: a.friendly_type_str(),
-                    });
-                    return err(warnings, errors);
+            let offset_of_this_field = {
+                match fields {
+                    FieldsKind::Struct(struct_fields) => {
+                        let fields_for_layout = struct_fields
+                            .iter()
+                            .map(|TypedStructField { name, r#type, .. }| {
+                                (*r#type, span.clone(), name.clone())
+                            })
+                            .collect::<Vec<_>>();
+                        let field_layout = check!(
+                            get_contiguous_memory_layout(&fields_for_layout[..]),
+                            return err(warnings, errors),
+                            warnings,
+                            errors
+                        );
+                        let name = match kind {
+                            ReassignmentLhsKind::StructField { name } => name,
+                        };
+                        check!(
+                            field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
+                            return err(warnings, errors),
+                            warnings,
+                            errors
+                        )
+                    }
                 }
+            };
+            offset_in_words += offset_of_this_field;
+            fields = match kind {
+                ReassignmentLhsKind::StructField { name } => match r#type {
+                    TypeInfo::Struct { ref fields, .. } => FieldsKind::Struct(fields.clone()),
+                    a => {
+                        errors.push(CompileError::NotAStruct {
+                            name: name.as_str().to_string(),
+                            span: name.span().clone(),
+                            actually: a.friendly_type_str(),
+                        });
+                        return err(warnings, errors);
+                    }
+                },
             };
         }
         let ptr = check!(
