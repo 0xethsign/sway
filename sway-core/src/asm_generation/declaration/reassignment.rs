@@ -62,100 +62,107 @@ pub(crate) fn convert_reassignment_to_asm(
             ),
         ));
     } else {
-        // 0. get the field layout
-        // 1. find the offset to this field
-        // 2. write rhs to the address above
-        //
-        // step 0
-        enum FieldsKind {
-            Struct(Vec<TypedStructField>),
-        }
+        // TODO(static span) use spans instead of strings below
+        let span = sway_types::span::Span::new(
+            "TODO(static span): use Idents instead of Strings".into(),
+            0,
+            0,
+            None,
+        )
+        .unwrap();
         let mut offset_in_words = 0;
-        let (mut fields, top_level_decl) = {
-            let r#type = &reassignment.lhs_type;
-            let name = &reassignment.lhs_base_name;
-            let res = match resolve_type(*r#type, name.span()) {
-                Ok(TypeInfo::Struct { ref fields, .. }) => {
-                    Ok((FieldsKind::Struct(fields.clone()), name))
-                }
-                Ok(ref a) => Err(CompileError::NotAStruct {
-                    name: name.as_str().to_string(),
-                    span: name.span().clone(),
-                    actually: a.friendly_type_str(),
-                }),
-                Err(a) => Err(CompileError::TypeError(a)),
-            };
-            match res {
-                Ok(o) => o,
-                Err(e) => {
-                    errors.push(e);
+        let mut ty = reassignment.lhs_type;
+        let mut ty_span = reassignment.lhs_base_name.span();
+        let mut lhs_name_for_error = reassignment.lhs_base_name.to_string();
+        let mut lhs_span_for_error = reassignment.lhs_base_name.span().clone();
+        for ReassignmentLhs { kind, .. } in &reassignment.lhs_indices {
+            let resolved_type = match resolve_type(ty, &ty_span) {
+                Ok(resolved_type) => resolved_type,
+                Err(error) => {
+                    errors.push(CompileError::TypeError(error));
                     return err(warnings, errors);
                 }
-            }
-        };
-
-        // delve into this potentially nested field access and figure out the location of this
-        // subfield
-        for ReassignmentLhs { r#type, kind } in reassignment.lhs_indices.iter() {
-            let r#type = match resolve_type(*r#type, &kind.span()) {
-                Ok(o) => o,
-                Err(e) => {
-                    errors.push(CompileError::TypeError(e));
-                    TypeInfo::ErrorRecovery
-                }
             };
-            // TODO(static span) use spans instead of strings below
-            let span = sway_types::span::Span::new(
-                "TODO(static span): use Idents instead of Strings".into(),
-                0,
-                0,
-                None,
-            )
-            .unwrap();
-            let offset_of_this_field = {
-                match fields {
-                    FieldsKind::Struct(struct_fields) => {
-                        let fields_for_layout = struct_fields
+            match (resolved_type, kind) {
+                (
+                    TypeInfo::Struct {
+                        name: struct_name,
+                        fields,
+                        ..
+                    },
+                    ProjectionKind::StructField { name },
+                ) => {
+                    let fields_for_layout = {
+                        fields
                             .iter()
                             .map(|TypedStructField { name, r#type, .. }| {
                                 (*r#type, span.clone(), name.clone())
                             })
-                            .collect::<Vec<_>>();
-                        let field_layout = check!(
-                            get_contiguous_memory_layout(&fields_for_layout[..]),
-                            return err(warnings, errors),
-                            warnings,
-                            errors
-                        );
-                        let name = match kind {
-                            ProjectionKind::StructField { name } => name,
-                        };
-                        check!(
-                            field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
-                            return err(warnings, errors),
-                            warnings,
-                            errors
+                            .collect::<Vec<_>>()
+                    };
+                    let field_layout = check!(
+                        get_contiguous_memory_layout(&fields_for_layout[..]),
+                        return err(warnings, errors),
+                        warnings,
+                        errors
+                    );
+                    let field_offset = check!(
+                        field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
+                        return err(warnings, errors),
+                        warnings,
+                        errors
+                    );
+                    let field_type_opt = {
+                        fields.iter().find_map(
+                            |TypedStructField {
+                                 name: field_name,
+                                 r#type,
+                                 ..
+                             }| {
+                                if name == field_name {
+                                    Some(r#type)
+                                } else {
+                                    None
+                                }
+                            },
                         )
-                    }
+                    };
+                    let field_type = match field_type_opt {
+                        Some(field_type) => field_type,
+                        None => {
+                            errors.push(CompileError::FieldNotFound {
+                                field_name: name.clone(),
+                                struct_name,
+                                available_fields: {
+                                    fields
+                                        .iter()
+                                        .map(|field| field.name.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
+                                },
+                            });
+                            return err(warnings, errors);
+                        }
+                    };
+                    offset_in_words += field_offset;
+                    ty = *field_type;
+                    ty_span = name.span();
+                    lhs_name_for_error.push_str(name.as_str());
+                    lhs_span_for_error =
+                        sway_types::span::Span::join(lhs_span_for_error, name.span().clone());
                 }
-            };
-            offset_in_words += offset_of_this_field;
-            fields = match kind {
-                ProjectionKind::StructField { name } => match r#type {
-                    TypeInfo::Struct { ref fields, .. } => FieldsKind::Struct(fields.clone()),
-                    a => {
-                        errors.push(CompileError::NotAStruct {
-                            name: name.as_str().to_string(),
-                            span: name.span().clone(),
-                            actually: a.friendly_type_str(),
-                        });
-                        return err(warnings, errors);
-                    }
-                },
-            };
+                (actually, ProjectionKind::StructField { .. }) => {
+                    errors.push(CompileError::NotAStruct {
+                        name: lhs_name_for_error,
+                        span: lhs_span_for_error,
+                        actually: actually.friendly_type_str(),
+                    });
+                    return err(warnings, errors);
+                }
+            }
         }
         let ptr = check!(
-            namespace.look_up_variable(top_level_decl),
+            namespace.look_up_variable(&reassignment.lhs_base_name),
             return err(warnings, errors),
             warnings,
             errors
