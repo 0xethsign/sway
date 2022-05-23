@@ -7,7 +7,7 @@ use crate::{
     asm_lang::{VirtualImmediate12, VirtualOp},
     constants::VM_WORD_SIZE,
     semantic_analysis::ast_node::{
-        ReassignmentLhs, ReassignmentLhsKind, TypedReassignment, TypedStructField,
+        ProjectionKind, ReassignmentLhs, TypedReassignment, TypedStructField,
     },
     type_engine::*,
     type_engine::{resolve_type, TypeInfo},
@@ -128,7 +128,7 @@ pub(crate) fn convert_reassignment_to_asm(
                             errors
                         );
                         let name = match kind {
-                            ReassignmentLhsKind::StructField { name } => name,
+                            ProjectionKind::StructField { name } => name,
                         };
                         check!(
                             field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
@@ -141,7 +141,7 @@ pub(crate) fn convert_reassignment_to_asm(
             };
             offset_in_words += offset_of_this_field;
             fields = match kind {
-                ReassignmentLhsKind::StructField { name } => match r#type {
+                ProjectionKind::StructField { name } => match r#type {
                     TypeInfo::Struct { ref fields, .. } => FieldsKind::Struct(fields.clone()),
                     a => {
                         errors.push(CompileError::NotAStruct {
