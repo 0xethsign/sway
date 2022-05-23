@@ -25,15 +25,17 @@ pub(crate) struct FieldMemoryLayoutDescriptor<N> {
     size: u64,
 }
 
-impl ContiguousMemoryLayoutDescriptor<Ident> {
+impl<N> ContiguousMemoryLayoutDescriptor<N> {
     /// Calculates the offset in words from the start of a struct to a specific field.
-    pub(crate) fn offset_to_field_name(&self, name: &str, span: Span) -> CompileResult<u64> {
-        let field_ix = if let Some(ix) =
-            self.fields
-                .iter()
-                .position(|FieldMemoryLayoutDescriptor { name_of_field, .. }| {
-                    name_of_field.as_str() == name
-                }) {
+    pub(crate) fn offset_to_field_name<M>(&self, name: &M, span: Span) -> CompileResult<u64>
+    where
+        N: PartialEq<M>,
+    {
+        let field_ix = if let Some(ix) = self
+            .fields
+            .iter()
+            .position(|FieldMemoryLayoutDescriptor { name_of_field, .. }| name_of_field == name)
+        {
             ix
         } else {
             return err(vec![],
@@ -90,13 +92,13 @@ fn test_struct_memory_layout() {
     assert_eq!(numbers.total_size(), 2u64);
     assert_eq!(
         numbers
-            .offset_to_field_name(first_field_name.as_str(), first_field_name.span().clone())
+            .offset_to_field_name(&first_field_name, first_field_name.span().clone())
             .unwrap(&mut warnings, &mut errors),
         0u64
     );
     assert_eq!(
         numbers
-            .offset_to_field_name(second_field_name.as_str(), first_field_name.span().clone())
+            .offset_to_field_name(&second_field_name, first_field_name.span().clone())
             .unwrap(&mut warnings, &mut errors),
         1u64
     );

@@ -123,7 +123,7 @@ pub(crate) fn convert_subfield_to_asm(
     let field_to_access_name = field_to_access.to_string();
     // step 2
     let offset_in_words = check!(
-        descriptor.offset_to_field_name(field_to_access.as_str(), field_to_access.span().clone()),
+        descriptor.offset_to_field_name(field_to_access, field_to_access.span().clone()),
         0,
         warnings,
         errors

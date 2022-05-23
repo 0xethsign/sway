@@ -105,7 +105,7 @@ pub(crate) fn convert_reassignment_to_asm(
                         errors
                     );
                     let field_offset = check!(
-                        field_layout.offset_to_field_name(name.as_str(), name.span().clone()),
+                        field_layout.offset_to_field_name(name, name.span().clone()),
                         return err(warnings, errors),
                         warnings,
                         errors
