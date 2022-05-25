@@ -18,6 +18,7 @@ pub struct FunctionDeclaration {
     pub body: CodeBlock,
     pub parameters: Vec<FunctionParameter>,
     pub span: Span,
+    pub sig_span: Span,
     pub return_type: TypeInfo,
     pub(crate) type_parameters: Vec<TypeParameter>,
     pub(crate) return_type_span: Span,

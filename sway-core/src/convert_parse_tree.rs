@@ -533,6 +533,7 @@ fn item_fn_to_function_declaration(
     attributes: &AttributesMap,
 ) -> Result<FunctionDeclaration, ErrorEmitted> {
     let span = item_fn.span();
+    let sig_span = item_fn.fn_signature.span();
     let return_type_span = match &item_fn.fn_signature.return_type_opt {
         Some((_right_arrow_token, ty)) => ty.span(),
         None => item_fn.fn_signature.span(),
@@ -547,6 +548,7 @@ fn item_fn_to_function_declaration(
             item_fn.fn_signature.arguments.into_inner(),
         )?,
         span,
+        sig_span,
         return_type: match item_fn.fn_signature.return_type_opt {
             Some((_right_arrow, ty)) => ty_to_type_info(ec, ty)?,
             None => TypeInfo::Tuple(Vec::new()),

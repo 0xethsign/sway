@@ -1,41 +1,46 @@
 #[macro_use]
 pub mod error;
 
+pub mod constants;
+pub mod parse_tree;
+pub mod semantic_analysis;
+pub mod source_map;
+pub mod type_engine;
+pub mod types;
+
+pub use {
+    asm_generation::{AbstractInstructionSet, FinalizedAsm, SwayAsmSet},
+    build_config::BuildConfig,
+    error::{CompileError, CompileResult, CompileWarning},
+    parse_tree::*,
+    semantic_analysis::{
+        namespace::{self, Namespace},
+        TreeType, TypedDeclaration, TypedFunctionDeclaration, TypedParseTree,
+    },
+    type_engine::TypeInfo,
+    untyped_ast::{AstNode, AstNodeContent, PurityChecker},
+};
+
 mod asm_generation;
 mod asm_lang;
 mod build_config;
 mod concurrent_slab;
-pub mod constants;
 mod control_flow_analysis;
 mod convert_parse_tree;
 mod optimize;
-pub mod parse_tree;
-pub mod semantic_analysis;
-pub mod source_map;
 mod style;
-pub mod type_engine;
+mod untyped_ast;
 
-use crate::{
+use {
     asm_generation::{checks, compile_ast_to_asm},
+    control_flow_analysis::{ControlFlowGraph, Graph},
     error::*,
     source_map::SourceMap,
 };
-pub use asm_generation::{AbstractInstructionSet, FinalizedAsm, SwayAsmSet};
-pub use build_config::BuildConfig;
-use control_flow_analysis::{ControlFlowGraph, Graph};
-use std::collections::HashMap;
-use std::sync::Arc;
 
-pub use semantic_analysis::{
-    namespace::{self, Namespace},
-    TreeType, TypedDeclaration, TypedFunctionDeclaration, TypedParseTree,
-};
-pub mod types;
-pub use crate::parse_tree::{Declaration, Expression, UseStatement, WhileLoop, *};
-
-pub use error::{CompileError, CompileResult, CompileWarning};
 use sway_types::{ident::Ident, span};
-pub use type_engine::TypeInfo;
+
+use std::{collections::HashMap, sync::Arc};
 
 /// Represents a parsed, but not yet type-checked, Sway program.
 /// A Sway program can be either a contract, script, predicate, or
@@ -55,42 +60,6 @@ pub struct ParseTree {
     pub root_nodes: Vec<AstNode>,
     /// The [span::Span] of the entire tree.
     pub span: span::Span,
-}
-
-/// A single [AstNode] represents a node in the parse tree. Note that [AstNode]
-/// is a recursive type and can contain other [AstNode], thus populating the tree.
-#[derive(Debug, Clone)]
-pub struct AstNode {
-    /// The content of this ast node, which could be any control flow structure or other
-    /// basic organizational component.
-    pub content: AstNodeContent,
-    /// The [span::Span] representing this entire [AstNode].
-    pub span: span::Span,
-}
-
-/// Represents the various structures that constitute a Sway program.
-#[derive(Debug, Clone)]
-pub enum AstNodeContent {
-    /// A statement of the form `use foo::bar;` or `use ::foo::bar;`
-    UseStatement(UseStatement),
-    /// A statement of the form `return foo;`
-    ReturnStatement(ReturnStatement),
-    /// Any type of declaration, of which there are quite a few. See [Declaration] for more details
-    /// on the possible variants.
-    Declaration(Declaration),
-    /// Any type of expression, of which there are quite a few. See [Expression] for more details.
-    Expression(Expression),
-    /// An implicit return expression is different from a [AstNodeContent::ReturnStatement] because
-    /// it is not a control flow item. Therefore it is a different variant.
-    ///
-    /// An implicit return expression is an [Expression] at the end of a code block which has no
-    /// semicolon, denoting that it is the [Expression] to be returned from that block.
-    ImplicitReturnExpression(Expression),
-    /// A control flow element which loops continually until some boolean expression evaluates as
-    /// `false`.
-    WhileLoop(WhileLoop),
-    /// A statement of the form `dep foo::bar;` which imports/includes another source file.
-    IncludeStatement(IncludeStatement),
 }
 
 /// Given an input `Arc<str>` and an optional [BuildConfig], parse the input into a [SwayParseTree].
@@ -278,6 +247,15 @@ pub fn compile_to_ast(
         }
     };
 
+    let (mut new_warnings, mut new_errors) = perform_purity_analysis(&parse_tree.tree);
+    warnings.append(&mut new_warnings);
+    errors.append(&mut new_errors);
+    if !errors.is_empty() {
+        errors = dedup_unsorted(errors);
+        warnings = dedup_unsorted(warnings);
+        return CompileAstResult::Failure { errors, warnings };
+    }
+
     let mut dead_code_graph = ControlFlowGraph {
         graph: Graph::new(),
         entry_points: vec![],
@@ -307,20 +285,20 @@ pub fn compile_to_ast(
         }
     };
 
-    let (mut l_warnings, mut l_errors) = perform_control_flow_analysis(
+    let (mut new_warnings, mut new_errors) = perform_control_flow_analysis(
         &typed_parse_tree,
         &parse_tree.tree_type,
         &mut dead_code_graph,
     );
-
-    errors.append(&mut l_errors);
-    warnings.append(&mut l_warnings);
-    errors = dedup_unsorted(errors);
-    warnings = dedup_unsorted(warnings);
+    errors.append(&mut new_errors);
+    warnings.append(&mut new_warnings);
     if !errors.is_empty() {
+        errors = dedup_unsorted(errors);
+        warnings = dedup_unsorted(warnings);
         return CompileAstResult::Failure { errors, warnings };
     }
 
+    warnings = dedup_unsorted(warnings);
     CompileAstResult::Success {
         parse_tree: Box::new(typed_parse_tree),
         tree_type: parse_tree.tree_type,
@@ -547,6 +525,53 @@ fn perform_control_flow_analysis(
     (warnings, errors)
 }
 
+fn perform_purity_analysis(tree: &ParseTree) -> (Vec<CompileWarning>, Vec<CompileError>) {
+    let mut checker = PurityChecker::default();
+    for ast_node in &tree.root_nodes {
+        checker.check_purity_astnode(ast_node);
+    }
+    (checker.warnings, checker.errors)
+}
+
+/// We want compile errors and warnings to retain their ordering, since typically
+/// they are grouped by relevance. However, we want to deduplicate them.
+/// Stdlib dedup in Rust assumes sorted data for efficiency, but we don't want that.
+/// A hash set would also mess up the order, so this is just a brute force way of doing it
+/// with a vector.
+fn dedup_unsorted<T: PartialEq + std::hash::Hash>(mut data: Vec<T>) -> Vec<T> {
+    use smallvec::SmallVec;
+    use std::collections::hash_map::{DefaultHasher, Entry};
+    use std::hash::Hasher;
+
+    let mut write_index = 0;
+    let mut indexes: HashMap<u64, SmallVec<[usize; 1]>> = HashMap::with_capacity(data.len());
+    for read_index in 0..data.len() {
+        let hash = {
+            let mut hasher = DefaultHasher::new();
+            data[read_index].hash(&mut hasher);
+            hasher.finish()
+        };
+        let index_vec = match indexes.entry(hash) {
+            Entry::Occupied(oe) => {
+                if oe
+                    .get()
+                    .iter()
+                    .any(|index| data[*index] == data[read_index])
+                {
+                    continue;
+                }
+                oe.into_mut()
+            }
+            Entry::Vacant(ve) => ve.insert(SmallVec::new()),
+        };
+        data.swap(write_index, read_index);
+        index_vec.push(write_index);
+        write_index += 1;
+    }
+    data.truncate(write_index);
+    data
+}
+
 #[test]
 fn test_basic_prog() {
     let prog = parse(
@@ -696,43 +721,4 @@ fn test_unary_ordering() {
     } else {
         panic!("Was not ast node")
     };
-}
-
-/// We want compile errors and warnings to retain their ordering, since typically
-/// they are grouped by relevance. However, we want to deduplicate them.
-/// Stdlib dedup in Rust assumes sorted data for efficiency, but we don't want that.
-/// A hash set would also mess up the order, so this is just a brute force way of doing it
-/// with a vector.
-fn dedup_unsorted<T: PartialEq + std::hash::Hash>(mut data: Vec<T>) -> Vec<T> {
-    use smallvec::SmallVec;
-    use std::collections::hash_map::{DefaultHasher, Entry};
-    use std::hash::Hasher;
-
-    let mut write_index = 0;
-    let mut indexes: HashMap<u64, SmallVec<[usize; 1]>> = HashMap::with_capacity(data.len());
-    for read_index in 0..data.len() {
-        let hash = {
-            let mut hasher = DefaultHasher::new();
-            data[read_index].hash(&mut hasher);
-            hasher.finish()
-        };
-        let index_vec = match indexes.entry(hash) {
-            Entry::Occupied(oe) => {
-                if oe
-                    .get()
-                    .iter()
-                    .any(|index| data[*index] == data[read_index])
-                {
-                    continue;
-                }
-                oe.into_mut()
-            }
-            Entry::Vacant(ve) => ve.insert(SmallVec::new()),
-        };
-        data.swap(write_index, read_index);
-        index_vec.push(write_index);
-        write_index += 1;
-    }
-    data.truncate(write_index);
-    data
 }
