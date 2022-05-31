@@ -9,6 +9,7 @@ use crate::{
     semantic_analysis::ast_node::{ProjectionKind, TypedReassignment, TypedStructField},
     type_engine::*,
     type_engine::{resolve_type, TypeInfo},
+    TypeArgument,
 };
 use either::Either;
 
@@ -149,8 +150,64 @@ pub(crate) fn convert_reassignment_to_asm(
                     lhs_span_for_error =
                         sway_types::span::Span::join(lhs_span_for_error, name.span().clone());
                 }
+                (TypeInfo::Tuple(fields), ProjectionKind::TupleField { index, index_span }) => {
+                    let fields_for_layout = {
+                        fields
+                            .iter()
+                            .enumerate()
+                            .map(|(index, TypeArgument { type_id, span })| {
+                                (*type_id, span.clone(), index)
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    let field_layout = check!(
+                        get_contiguous_memory_layout(&fields_for_layout[..]),
+                        return err(warnings, errors),
+                        warnings,
+                        errors
+                    );
+                    let field_offset = check!(
+                        field_layout.offset_to_field_name(index, index_span.clone()),
+                        return err(warnings, errors),
+                        warnings,
+                        errors
+                    );
+                    let field_type_opt = {
+                        fields
+                            .get(*index)
+                            .map(|TypeArgument { type_id, .. }| type_id)
+                    };
+                    let field_type = match field_type_opt {
+                        Some(field_type) => field_type,
+                        None => {
+                            errors.push(CompileError::TupleIndexOutOfBounds {
+                                index: *index,
+                                count: fields.len(),
+                                span: sway_types::span::Span::join(
+                                    lhs_span_for_error,
+                                    index_span.clone(),
+                                ),
+                            });
+                            return err(warnings, errors);
+                        }
+                    };
+                    offset_in_words += field_offset;
+                    ty = *field_type;
+                    ty_span = index_span;
+                    lhs_name_for_error.push_str(&index.to_string());
+                    lhs_span_for_error =
+                        sway_types::span::Span::join(lhs_span_for_error, index_span.clone());
+                }
                 (actually, ProjectionKind::StructField { .. }) => {
                     errors.push(CompileError::NotAStruct {
+                        name: lhs_name_for_error,
+                        span: lhs_span_for_error,
+                        actually: actually.friendly_type_str(),
+                    });
+                    return err(warnings, errors);
+                }
+                (actually, ProjectionKind::TupleField { .. }) => {
+                    errors.push(CompileError::NotATuple {
                         name: lhs_name_for_error,
                         span: lhs_span_for_error,
                         actually: actually.friendly_type_str(),

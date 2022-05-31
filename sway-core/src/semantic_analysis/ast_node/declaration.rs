@@ -21,6 +21,7 @@ use crate::{
     Ident,
 };
 use derivative::Derivative;
+use std::borrow::Cow;
 use sway_types::Span;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -348,8 +349,12 @@ impl TypedDeclaration {
                     lhs_indices,
                     ..
                 }) => {
-                    std::iter::once(lhs_base_name.as_str())
-                        .chain(lhs_indices.iter().flat_map(|x| [".", x.pretty_print()]))
+                    std::iter::once(Cow::Borrowed(lhs_base_name.as_str()))
+                        .chain(
+                            lhs_indices
+                                .iter()
+                                .flat_map(|x| [Cow::Borrowed("."), x.pretty_print()]),
+                        )
                         .collect::<String>()
                 }
                 _ => String::new(),
@@ -498,6 +503,7 @@ pub struct ReassignmentLhs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProjectionKind {
     StructField { name: Ident },
+    TupleField { index: usize, index_span: Span },
 }
 
 // NOTE: Hash and PartialEq must uphold the invariant:
@@ -513,12 +519,14 @@ impl ProjectionKind {
     pub(crate) fn span(&self) -> Span {
         match self {
             ProjectionKind::StructField { name } => name.span().clone(),
+            ProjectionKind::TupleField { index_span, .. } => index_span.clone(),
         }
     }
 
-    pub(crate) fn pretty_print(&self) -> &str {
+    pub(crate) fn pretty_print(&self) -> Cow<str> {
         match self {
-            ProjectionKind::StructField { name } => name.as_str(),
+            ProjectionKind::StructField { name } => Cow::Borrowed(name.as_str()),
+            ProjectionKind::TupleField { index, .. } => Cow::Owned(index.to_string()),
         }
     }
 }
