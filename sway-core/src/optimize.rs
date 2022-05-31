@@ -1515,7 +1515,7 @@ impl FnCompiler {
 
         // Get the list of indices used to access the storage field. This will be empty
         // if the storage field type is not a struct.
-        let base_type = fields[0].get_type();
+        let base_type = fields[0].r#type;
         let field_idcs = get_indices_for_struct_access(base_type, &fields[1..])?;
 
         // Do the actual work. This is a recursive function because we want to drill down
@@ -1704,12 +1704,12 @@ impl FnCompiler {
         let field_kind = ProjectionKind::StructField {
             name: ast_field.name.clone(),
         };
-        let field_idx = match get_struct_name_and_field_index(struct_type_id, field_kind) {
+        let field_idx = match get_struct_name_field_index_and_type(struct_type_id, field_kind) {
             None => Err(CompileError::Internal(
                 "Unknown struct in field expression.",
                 ast_field.span,
             )),
-            Some((struct_name, field_idx)) => match field_idx {
+            Some((struct_name, field_idx_and_type_opt)) => match field_idx_and_type_opt {
                 None => Err(CompileError::InternalOwned(
                     format!(
                         "Unknown field name '{}' for struct '{struct_name}' in field expression.",
@@ -1717,7 +1717,7 @@ impl FnCompiler {
                     ),
                     ast_field.span,
                 )),
-                Some(field_idx) => Ok(field_idx),
+                Some((field_idx, _field_type)) => Ok(field_idx),
             },
         }?;
 
@@ -1864,7 +1864,7 @@ impl FnCompiler {
         // Get the list of indices used to access the storage field. This will be empty
         // if the storage field type is not a struct.
         // FIXME: shouldn't have to extract the first field like this.
-        let base_type = fields[0].get_type();
+        let base_type = fields[0].r#type;
         let field_idcs = get_indices_for_struct_access(base_type, &fields[1..])?;
 
         // Do the actual work. This is a recursive function because we want to drill down
@@ -2226,10 +2226,10 @@ impl LexicalMap {
 // -------------------------------------------------------------------------------------------------
 // Get the name of a struct and the index to a particular named field from a TypeId.
 
-fn get_struct_name_and_field_index(
+fn get_struct_name_field_index_and_type(
     field_type: TypeId,
     field_kind: ProjectionKind,
-) -> Option<(String, Option<u64>)> {
+) -> Option<(String, Option<(u64, TypeId)>)> {
     let ty_info = resolve_type(field_type, &field_kind.span()).ok()?;
     match (ty_info, field_kind) {
         (
@@ -2241,7 +2241,7 @@ fn get_struct_name_and_field_index(
                 .iter()
                 .enumerate()
                 .find(|(_, field)| field.name == field_name)
-                .map(|(idx, _)| idx as u64),
+                .map(|(idx, field)| (idx as u64, field.r#type)),
         )),
         _otherwise => None,
     }
@@ -2253,16 +2253,12 @@ fn get_struct_name_and_field_index(
 // trait.  And we can even wrap the implementation in a macro.
 
 trait TypedNamedField {
-    fn get_type(&self) -> TypeId;
     fn get_field_kind(&self) -> ProjectionKind;
 }
 
 macro_rules! impl_typed_named_field_for {
     ($field_type_name: ident) => {
         impl TypedNamedField for $field_type_name {
-            fn get_type(&self) -> TypeId {
-                self.r#type
-            }
             fn get_field_kind(&self) -> ProjectionKind {
                 ProjectionKind::StructField {
                     name: self.name.clone(),
@@ -2272,12 +2268,9 @@ macro_rules! impl_typed_named_field_for {
     };
 }
 
-impl TypedNamedField for ReassignmentLhs {
-    fn get_type(&self) -> TypeId {
-        self.r#type
-    }
+impl TypedNamedField for ProjectionKind {
     fn get_field_kind(&self) -> ProjectionKind {
-        self.kind.clone()
+        self.clone()
     }
 }
 
@@ -2294,12 +2287,12 @@ fn get_indices_for_struct_access<F: TypedNamedField>(
             // Make sure we have an aggregate to index into.
             acc.and_then(|(mut fld_idcs, prev_type_id)| {
                 // Get the field index and also its type for the next iteration.
-                match get_struct_name_and_field_index(prev_type_id, field.get_field_kind()) {
+                match get_struct_name_field_index_and_type(prev_type_id, field.get_field_kind()) {
                     None => Err(CompileError::Internal(
                         "Unknown struct in in reassignment.",
                         Span::dummy(),
                     )),
-                    Some((struct_name, field_idx)) => match field_idx {
+                    Some((struct_name, field_idx_and_type_opt)) => match field_idx_and_type_opt {
                         None => Err(CompileError::InternalOwned(
                             format!(
                                 "Unknown field '{}' for struct {struct_name} in reassignment.",
@@ -2307,10 +2300,10 @@ fn get_indices_for_struct_access<F: TypedNamedField>(
                             ),
                             field.get_field_kind().span(),
                         )),
-                        Some(field_idx) => {
+                        Some((field_idx, field_type)) => {
                             // Save the field index.
                             fld_idcs.push(field_idx);
-                            Ok((fld_idcs, field.get_type()))
+                            Ok((fld_idcs, field_type))
                         }
                     },
                 }

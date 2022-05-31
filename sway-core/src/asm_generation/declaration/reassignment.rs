@@ -6,9 +6,7 @@ use crate::{
     },
     asm_lang::{VirtualImmediate12, VirtualOp},
     constants::VM_WORD_SIZE,
-    semantic_analysis::ast_node::{
-        ProjectionKind, ReassignmentLhs, TypedReassignment, TypedStructField,
-    },
+    semantic_analysis::ast_node::{ProjectionKind, TypedReassignment, TypedStructField},
     type_engine::*,
     type_engine::{resolve_type, TypeInfo},
 };
@@ -75,8 +73,8 @@ pub(crate) fn convert_reassignment_to_asm(
         let mut ty_span = reassignment.lhs_base_name.span();
         let mut lhs_name_for_error = reassignment.lhs_base_name.to_string();
         let mut lhs_span_for_error = reassignment.lhs_base_name.span().clone();
-        for ReassignmentLhs { kind, .. } in &reassignment.lhs_indices {
-            let resolved_type = match resolve_type(ty, &ty_span) {
+        for kind in &reassignment.lhs_indices {
+            let resolved_type = match resolve_type(ty, ty_span) {
                 Ok(resolved_type) => resolved_type,
                 Err(error) => {
                     errors.push(CompileError::TypeError(error));
